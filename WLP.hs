@@ -17,12 +17,13 @@ import qualified Data.Map as Map
 
 data Program = Program ProgramName Parameters Statement
 
+
 data Statement =
   Skip
   | Assert Expression
   | Assume Expression
   | Assign AssignTargets Expression
-  | FnCallAssign AssignTarget ProgramName
+  | FnCallAssign AssignTarget ProgramName [Expression]
   | Return Expression
   | Seq Statement Statement
   | NonDet Statement Statement
@@ -53,7 +54,7 @@ data Expression =
     | EName Name
     | BinOp Expression BinaryOp Expression
     | LNot Expression
-    | FunctionCall -- TODO this case
+    | UninterpCall String [Expression]
     | Forall BoundVariable Expression
     | ArrAccess ArrName Expression
     | IfThenElse Expression Expression Expression
@@ -96,6 +97,7 @@ type Expressions = [Expression]
 type AssignTargets = [AssignTarget]
 
 type PostConds = Map.Map ProgramName Expression
+type ProgParams = Map.Map ProgramName Parameters 
 
 
 
@@ -118,7 +120,7 @@ getArrTargets targets =
 -- a statement and an expression, return its wlp and a list of indvariant conditions to check
 --We need the postconditions in order to allow function calls, since inferring
 --Function postconditions is equivalent to inferring loop invariants, if we allow recursion 
-wlp :: PostConds -> Statement -> Expression -> (Expression, [Expression])
+wlp :: (PostConds, ProgParams) -> Statement -> Expression -> (Expression, [Expression])
 wlp pconds Skip q = (q, [])
 wlp pconds (Assert p) q = (BinOp p LAnd q, [])
 wlp pconds (Assume p) q = (BinOp p Implies q, [])
@@ -127,7 +129,21 @@ wlp pconds (Assign targets exp) q =
     sub1 = subExpForName (getVarTargets targets) exp q
     sub2 = subExpForArrName (getArrTargets targets) exp sub1
   in (sub2, []) --TODO make simultaneous?
-wlp pconds (Return s) q = error "TODO implement return"
+wlp pconds (Return expr) q = wlp pconds (Assign [VarTarget $ ToName "return"] expr) q --TODO special name?
+wlp (postConds, progParams) (FnCallAssign target progName params) q =
+  let
+    targetExp = case target of
+      VarTarget name -> EName name
+      ArrTarget arrName expr -> ArrAccess arrName expr
+    progPostcond = postConds Map.! progName
+    paramNames = map (\(Variable _ name _) -> name)$ progParams Map.! progName
+    paramPairs = zip paramNames params
+    postCondWithParams = foldr
+                         (\(pname, pexp) pcond  -> subExpForName [pname] pexp pcond)
+                         progPostcond paramPairs
+    postCondWithRet = subExpForName [ToName "return"] targetExp postCondWithParams
+    
+  in (BinOp postCondWithRet Implies q, [])
 wlp pconds (NonDet s1 s2) q =
   let
     (sub1, checks1) = (wlp pconds s1 q)
@@ -174,14 +190,14 @@ subExpForArrName names subExp = everywhere (mkT $ subOneLevelArr names subExp)
 
 --Special version for arrays
 
-programWLP :: PostConds -> Program -> (Expression, [Expression])
-programWLP postConds (Program name params body) =
+programWLP :: (PostConds, ProgParams) -> Program -> (Expression, [Expression])
+programWLP (postConds, paramDict) (Program name params body) =
   let
     --Get our postcondition from the dictionary
     q = postConds Map.! name
     --Declare our parameters as variables
     s = Var params body
-  in wlp postConds s q
+  in wlp (postConds, paramDict) s q
 
 
 
