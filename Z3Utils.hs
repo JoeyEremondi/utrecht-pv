@@ -3,7 +3,9 @@ module Z3Utils where
 
 import WLP
 import Data.List (intercalate)
+import qualified Data.Map as Map
 
+deriving instance Show ProgramName
 deriving instance Show Statement
 deriving instance Show Variable
 deriving instance Show AssignTarget
@@ -85,6 +87,9 @@ freeVars (NonDet s1 s2) = freeVars s1 ++ freeVars s2
 freeVars (Loop _ _ s) = freeVars s
 freeVars (Var vars s) = vars ++ freeVars s
 
+progFreeVars :: Program -> Variables
+progFreeVars (Program _ params body) = params ++ (freeVars body)
+
 showType :: Type -> String
 showType (Type IntT) = "Int"
 showType (Type BoolT) = "Bool"
@@ -115,11 +120,25 @@ instance Show BinaryOp where
 
 
 --Generate the Z3 code checking if the given statement matches the given post-condition
-z3wlp :: (Statement, Expression) -> (String, [String])
-z3wlp (s, q) =
+z3wlpSingle :: (Statement, Expression) -> (String, [String])
+z3wlpSingle (s, q) =
   let
     varDec (Variable _ v t) = parens $ "declare-const" +-+ show v +-+ show t
     varDecs vars = foldr (\v decs -> decs ++ "\n" ++ varDec v) "" vars
-    (theWLP, conds)  = wlp s q
+    (theWLP, conds)  = wlp Map.empty s q
     formatPred p = (varDecs (freeVars s) ++ "\n") ++ (formatZ3 $ p )
   in  (formatPred theWLP, map formatPred conds)
+
+
+--Generate the Z3 code checking if the given statement matches the given post-condition
+z3wlpMulti :: ([Program], PostConds) -> [(String, [String])]
+z3wlpMulti (progs, postConds) =
+  let
+    varDec (Variable _ v t) = parens $ "declare-const" +-+ show v +-+ show t
+    varDecs vars = foldr (\v decs -> decs ++ "\n" ++ varDec v) "" vars
+    wlpsAndConds  = map (programWLP postConds) progs
+    progWlpConds = zip progs wlpsAndConds
+    formatPred prog pred = (varDecs (progFreeVars prog) ++ "\n") ++ (formatZ3 $ pred )
+    formattedPreds = map (\(prog, (theWLP, conds)) ->
+                           (formatPred prog theWLP,  (map (formatPred prog) conds) ) ) progWlpConds
+  in formattedPreds

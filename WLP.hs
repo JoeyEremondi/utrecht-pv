@@ -9,6 +9,7 @@ import Data.List (intercalate)
 import Debug.Trace (trace)
 
 import Control.Monad (forM)
+import qualified Data.Map as Map
 
 --We declare our recursive data types initially as open types
 -- (i.e. a variable for the recursive part)
@@ -21,6 +22,7 @@ data Statement =
   | Assert Expression
   | Assume Expression
   | Assign AssignTargets Expression
+  | FnCallAssign AssignTarget ProgramName
   | Return Expression
   | Seq Statement Statement
   | NonDet Statement Statement
@@ -93,7 +95,7 @@ type Variables = [Variable]
 type Expressions = [Expression]
 type AssignTargets = [AssignTarget]
 
-
+type PostConds = Map.Map ProgramName Expression
 
 
 
@@ -112,35 +114,38 @@ getArrTargets targets =
                 ArrTarget n i -> [(n, i)]
                 _ -> []) targets
 
---Given a statement and an expression, return its wlp and a list of indvariant conditions to check  
-wlp :: Statement -> Expression -> (Expression, [Expression])
-wlp Skip q = (q, [])
-wlp (Assert p) q = (BinOp p LAnd q, [])
-wlp (Assume p) q = (BinOp p Implies q, [])
-wlp (Assign targets exp) q =
+--Given program postconditions,
+-- a statement and an expression, return its wlp and a list of indvariant conditions to check
+--We need the postconditions in order to allow function calls, since inferring
+--Function postconditions is equivalent to inferring loop invariants, if we allow recursion 
+wlp :: PostConds -> Statement -> Expression -> (Expression, [Expression])
+wlp pconds Skip q = (q, [])
+wlp pconds (Assert p) q = (BinOp p LAnd q, [])
+wlp pconds (Assume p) q = (BinOp p Implies q, [])
+wlp pconds (Assign targets exp) q =
   let
     sub1 = subExpForName (getVarTargets targets) exp q
     sub2 = subExpForArrName (getArrTargets targets) exp sub1
   in (sub2, []) --TODO make simultaneous?
-wlp (Return s) q = error "TODO implement return"
-wlp (NonDet s1 s2) q =
+wlp pconds (Return s) q = error "TODO implement return"
+wlp pconds (NonDet s1 s2) q =
   let
-    (sub1, checks1) = (wlp s1 q)
-    (sub2, checks2) = (wlp s2 q) 
+    (sub1, checks1) = (wlp pconds s1 q)
+    (sub2, checks2) = (wlp pconds s2 q) 
   in (BinOp sub1 LAnd sub2, checks1 ++ checks2)
-wlp (Seq s1 s2) q =
+wlp pconds (Seq s1 s2) q =
   let
-    (sub1, checks1) = (wlp s2 q)
-    (sub2, checks2) = wlp s1 sub1
+    (sub1, checks1) = (wlp pconds s2 q)
+    (sub2, checks2) = wlp pconds s1 sub1
   in (sub2, checks1 ++ checks2)
 --In this case, we must check that our invariant holds, so we generate our checks
-wlp (Loop invar guard body) q = let
-    (subWLP, subConds) = wlp body invar
+wlp pconds (Loop invar guard body) q = let
+    (subWLP, subConds) = wlp pconds body invar
   in (invar, [
       BinOp (BinOp invar LAnd (LNot guard)) Implies q
       ,BinOp (BinOp invar LAnd guard) Implies subWLP ]
      ++ subConds)
-wlp (Var vars s) q = wlp s q --TODO credentials 
+wlp pconds (Var vars s) q = wlp pconds s q --TODO credentials 
 
 subOneLevel :: [Name] ->  Expression -> Expression -> Expression
 subOneLevel names subExp e@(EName varName)   =
@@ -169,7 +174,14 @@ subExpForArrName names subExp = everywhere (mkT $ subOneLevelArr names subExp)
 
 --Special version for arrays
 
-
+programWLP :: PostConds -> Program -> (Expression, [Expression])
+programWLP postConds (Program name params body) =
+  let
+    --Get our postcondition from the dictionary
+    q = postConds Map.! name
+    --Declare our parameters as variables
+    s = Var params body
+  in wlp postConds s q
 
 
 

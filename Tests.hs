@@ -6,18 +6,19 @@ import Control.Monad (forM)
 import System.Process (readProcessWithExitCode)
 import System.Exit
 import Data.Maybe (isJust)
+import qualified Data.Map as Map
 
---String for filename to write to
---Bool for if the test should succeed
---And the program and postcondition to verify
-type TestCase = (String, ExpectedResult, (Statement, Expression))
+
+--TODO doc
+data TestCase = SingleProgram (String, ExpectedResult, (Statement, Expression))
+                | MultiProgram (String, ExpectedResult, [Program], PostConds)
 
 data ExpectedResult = Succeed  | Fail
 
 data TestResult = TestSuccess | TestFail String 
 
 isSorted :: TestCase
-isSorted = ("isSorted.z3", Succeed, (s,q))
+isSorted = SingleProgram ("isSorted.z3", Succeed, (s,q))
   where 
      s =
       Var [
@@ -66,14 +67,14 @@ isSorted = ("isSorted.z3", Succeed, (s,q))
          ) ) ) )
 
 simpleAssignTest :: TestCase
-simpleAssignTest = ("simpleAssign.z3", Succeed, (s,q))
+simpleAssignTest = SingleProgram ("simpleAssign.z3", Succeed, (s,q))
   where
     s = Var [Variable [] (ToName "x") (Type IntT)] $
         "x" `assign` (IntLit 3 `plus` IntLit 4)
     q = ((var "x") `eq` IntLit 7)
 
 ifElseTest :: TestCase
-ifElseTest = ("ifElse.z3", Succeed, (s,q))
+ifElseTest = SingleProgram ("ifElse.z3", Succeed, (s,q))
   where
     s = Var [Variable [] (ToName "x") (Type IntT)] $
         ifelse (var "x" `lt` IntLit 0)
@@ -82,7 +83,7 @@ ifElseTest = ("ifElse.z3", Succeed, (s,q))
     q = (var "x" `geq` IntLit 0)
 
 ifElseBadTest :: TestCase
-ifElseBadTest = ("ifElse.z3", Fail, (s,q))
+ifElseBadTest = SingleProgram ("ifElse.z3", Fail, (s,q))
   where
     s = Var [Variable [] (ToName "x") (Type IntT)] $
         ifelse (var "x" `lt` IntLit 0)
@@ -91,7 +92,7 @@ ifElseBadTest = ("ifElse.z3", Fail, (s,q))
     q = (var "x" `gt` IntLit 0)
 
 loopMultTest :: TestCase
-loopMultTest = ("loopMult.z3", Succeed, (s,q))
+loopMultTest = SingleProgram ("loopMult.z3", Succeed, (s,q))
   where
     s = Var [
       Variable [] (ToName "x") (Type IntT),
@@ -114,7 +115,7 @@ loopMultTest = ("loopMult.z3", Succeed, (s,q))
       (var "x" `eq` (IntLit 10 `times` var "y")) 
         
 loopMultBadTest :: TestCase
-loopMultBadTest = ("loopMultBad.z3", Fail, (s,q))
+loopMultBadTest = SingleProgram ("loopMultBad.z3", Fail, (s,q))
   where
     s = Var [
       Variable [] (ToName "x") (Type IntT),
@@ -138,7 +139,7 @@ loopMultBadTest = ("loopMultBad.z3", Fail, (s,q))
 
 
 badInvariantTest :: TestCase
-badInvariantTest = ("loopMultBadInvar.z3", Fail, (s,q))
+badInvariantTest = SingleProgram ("loopMultBadInvar.z3", Fail, (s,q))
   where
     s = Var [
       Variable [] (ToName "x") (Type IntT),
@@ -171,16 +172,27 @@ testList = [
            , loopMultBadTest
            ]
 
-x = isJust
 
 getModel :: String -> IO String
 getModel checkFile = do
-  (code, stdout, stderr) <- readProcessWithExitCode "z3" ["-in"] (checkFile ++ "\n(get-model)")
+  (_code, stdout, _stderr) <- readProcessWithExitCode "z3" ["-in"] (checkFile ++ "\n(get-model)")
   return stdout
 
-z3Unsat :: (Statement, Expression) -> IO TestResult
-z3Unsat testCase = do
-  let (testFile, checkFiles) = z3wlp testCase
+combineResults :: TestResult -> TestResult -> TestResult
+combineResults TestSuccess x = x
+combineResults x TestSuccess = x
+combineResults (TestFail s1) (TestFail s2) = TestFail (s1 ++ "\n" ++ s2)
+
+multiUnsat :: ([Program], PostConds) -> IO TestResult
+multiUnsat testCase = do
+  results <- mapM z3Unsat (z3wlpMulti testCase)
+  return $ foldr combineResults TestSuccess results
+
+singleUnsat :: (Statement, Expression) -> IO TestResult
+singleUnsat testCase = z3Unsat $ z3wlpSingle testCase 
+
+z3Unsat :: (String, [String]) -> IO TestResult
+z3Unsat (testFile, checkFiles) = do
   --Check each invariant condition generated along the way
   invarPasses <-
     forM checkFiles $ \checkFile -> do
@@ -191,7 +203,7 @@ z3Unsat testCase = do
         (ExitSuccess, "sat\n", "") ->
           return $ Just $ "Invariant Failed:\n" ++ checkFile ++ "\nModel:\n" ++ model
         r -> error $ "Z3 error: " ++ (show r) ++ "\n" ++ checkFile
-  case (filter isJust invarPasses) of
+  case (filter isJust invarPasses) of --TODO get justs
     ((Just str):_) -> return $ TestFail str
     [] -> do
       (code, stdout, stderr) <- readProcessWithExitCode "z3" ["-in"]  testFile
@@ -206,17 +218,22 @@ z3Unsat testCase = do
 main :: IO ()
 main = do
   --Get a list of bools for if each tests passes
-  successList <- forM testList $ \(testName, shouldPass, testCase) -> do
-    satResult <- z3Unsat testCase
-    case (shouldPass, satResult) of
-        (Succeed, TestSuccess) -> return True
-        (Fail, TestFail _) -> return True
-        (_, TestFail s) -> do
-          putStrLn $ "FAILED: " ++ testName ++ " found counter-example"
-          return False
-        (_, TestSuccess) -> do
-          putStrLn $ "FAILED: " ++ testName ++ " could not disprove bad postcondition"
-          return False
+  successList <- forM testList $ \test -> do
+      satResult <- case test of
+        SingleProgram (testName, shouldPass, testCase) -> singleUnsat testCase
+        MultiProgram (testName, shouldPass, programs, postconds) -> multiUnsat (programs, postconds)
+      let (testName, shouldPass) = case test of
+            SingleProgram (n, s, _) -> (n,s)
+            MultiProgram (n, s, _, _) -> (n,s)
+      case (shouldPass, satResult) of
+            (Succeed, TestSuccess) -> return True
+            (Fail, TestFail _) -> return True
+            (_, TestFail s) -> do
+              putStrLn $ "FAILED: " ++ testName ++ " found counter-example\n    " ++ s
+              return False
+            (_, TestSuccess) -> do
+              putStrLn $ "FAILED: " ++ testName ++ " could not disprove bad postcondition"
+              return False
     
   let numPasses = length $ filter id successList
   let numFails = length $ filter not successList
