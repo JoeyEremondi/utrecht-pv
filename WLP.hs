@@ -1,38 +1,52 @@
-{-# LANGUAGE DeriveFunctor, DeriveDataTypeable #-}
 module WLP where
 
-import Types
-import Z3Utils
+import           Types
+import           Z3Utils
+import           Data.Data
+import           Data.Generics
+import           Data.List     (sort)
+import qualified Data.Map      as Map
 
-import Data.Data
-import Data.Generics
-import qualified Data.Set as Set
-import Data.Typeable
-import Data.List (intercalate, sort)
-import Debug.Trace (trace)
+--Constants limiting how far we go trying to infer loop invariants
 
-import Control.Monad (forM)
-import qualified Data.Map as Map
-import Debug.Trace (trace)
+fixpointDepth :: Int
+fixpointDepth = 10
 
+unrollDepth :: Int
+unrollDepth = 20
 
-
+{-
+Helper function to get the names of variables in an assignment
+-}
 getVarTargets :: [AssignTarget] -> [Name]
-getVarTargets targets = 
+getVarTargets targets =
   concatMap (\t -> case t of
                 VarTarget n -> [n]
                 _ -> []) targets
 
+{-
+Helper function to get array name/index pairs in an assignment
+-}
 getArrTargets :: [AssignTarget] -> [(Name, Expression)]
-getArrTargets targets = 
+getArrTargets targets =
   concatMap (\t -> case t of
                 ArrTarget n i -> [(n, i)]
                 _ -> []) targets
 
---Given program postconditions,
--- a statement and an expression, return its wlp and a list of indvariant conditions to check
---We need the postconditions in order to allow function calls, since inferring
---Function postconditions is equivalent to inferring loop invariants, if we allow recursion 
+{-
+Given postconditions for each possible function called,
+Parameter types for each possible function called,
+the "top-level" statement we're finding the WLP for,
+a "current" statement, and an expression,
+find the weakest condition which will imply the postcondition
+whenever the statement halts.
+
+We need the postconditions in order to allow function calls, since inferring
+Function postconditions is equivalent to inferring loop invariants, if we allow recursion
+
+We need the "top-level" statement to get its free vars, since Z3 is used
+to try to find loop invariants in this procedure.
+-}
 wlp :: (PostConds, ProgParams, Statement)  -> Statement -> Expression -> (Expression, [Expression])
 wlp pconds  Skip q = (q, [])
 wlp pconds (Assert p) q = (BinOp p LAnd q, [])
@@ -55,12 +69,12 @@ wlp (postConds, progParams, _) (FnCallAssign target progName params) q =
                          (\(pname, pexp) pcond  -> subExpForName [pname] pexp pcond)
                          progPostcond paramPairs
     postCondWithRet = subExpForName [ToName "return"] targetExp postCondWithParams
-    
+
   in (BinOp postCondWithRet Implies q, [])
 wlp pconds (NonDet s1 s2) q =
   let
     (sub1, checks1) = (wlp pconds s1 q)
-    (sub2, checks2) = (wlp pconds s2 q) 
+    (sub2, checks2) = (wlp pconds s2 q)
   in (BinOp sub1 LAnd sub2, checks1 ++ checks2)
 wlp pconds (Seq s1 s2) q =
   let
@@ -74,81 +88,110 @@ wlp pconds (Loop (Just invar) guard body) q = let
       BinOp (BinOp invar LAnd (LNot guard)) Implies q
       ,BinOp (BinOp invar LAnd guard) Implies subWLP ]
      ++ subConds)
-wlp pconds (Loop Nothing guard body) q = let
-    invar = case (tryFindingInvar pconds guard body q) of
-      Nothing -> BoolLit False
-      Just i -> i
-    (subWLP, subConds) = wlp pconds body invar
-  in (invar, [
-      BinOp (BinOp invar LAnd (LNot guard)) Implies q
-      ,BinOp (BinOp invar LAnd guard) Implies subWLP ]
-     ++ subConds)
-wlp pconds (Var vars s) q = wlp pconds s q --TODO credentials 
+wlp pconds (Loop Nothing guard body) q =
+    case (tryFindingInvar pconds guard body q) of
+      Nothing -> wlp pconds (unrollLoop guard body) q
+      Just invar ->
+        let
+          (subWLP, subConds) = wlp pconds body invar
+        in (invar,
+            [
+                (invar `land` (LNot guard)) `implies` q
+               , (invar `land` guard) `implies` subWLP ] ++ subConds)
 
+wlp pconds (Var vars s) q = wlp pconds s q --TODO credentials
+
+{-
+Given a set of names to replace, an expression to replace them with,
+and an expression e, check if e is a name in our list,
+and if it is, replace it with the given substitution
+-}
 subOneLevel :: [Name] ->  Expression -> Expression -> Expression
 subOneLevel names subExp e@(EName varName)   =
   if (varName `elem` names)
   then subExp
   else e
---subOneLevel names subExp e@(ArrAccess arrName expr) =
---  if (Set.member (ArrTarget arrName expr) names) then subExp else e
-subOneLevel _ _ e = e --TODO is array case right?
+subOneLevel _ _ e = e
 
+--TODO what about forall conflicts?
+
+{-
+Use Scrap-Your-Boilerplate to recursively apply our substutitions
+to our expression, bottom-up
+-}
 subExpForName :: (Data a) => [Name] -> Expression -> a -> a
 subExpForName names subExp = everywhere (mkT $ subOneLevel names subExp)
 
+{-
+Given a list of array names and index expressions, an expression to subtitute,
+and an expression e, check if e is an array name in our list,
+and if it is, replace it with the approprate RepBy expression
+to denote a substitution
+-}
 subOneLevelArr :: [(Name, Expression)] -> Expression -> Expression -> Expression
 subOneLevelArr nameIndexPairs subExpr e@(EName varName) =
   let
     nameIndList = filter (\(n,_) -> n == varName) nameIndexPairs
-  in case nameIndList of
-    [] -> e
-    [(_,i)] -> RepBy (EName varName) i subExpr
+  in foldr (\(_,i) expSoFar -> RepBy expSoFar i subExpr) e nameIndList
     --TODO multi case?
 subOneLevelArr l subExp e = e
 
+{-
+Use Scrap-Your-Boilerplate to recursively apply our substutitions
+to our expression, bottom-up
+-}
 subExpForArrName :: (Data a) => [(Name, Expression)] -> Expression -> a -> a
 subExpForArrName names subExp = everywhere (mkT $ subOneLevelArr names subExp)
 
---Special version for arrays
+{-
+Given a loop guard and body, unroll the loop
+a constant number of times
+Used when we can't find a fixed-point invariant
+-}
+unrollLoop :: Expression -> Statement -> Statement
+unrollLoop guard body = helper unrollDepth (Assert $ LNot guard)
+  where
+    helper 0 accum = accum
+    helper i accum = helper (i-1) $
+      ifelse guard
+        (body `Seq` accum ) (Skip)
 
-fixpointDepth :: Int
-fixpointDepth = 100
 
-unrollDepth :: Int
-unrollDepth = 20
+{-
+Given program postconditions and parameters (for a multi-function program), a top-level statement,
+a loop guard and body, and a post-condition, use fixpoint iteration,
+up to a constant number of iterations,
+to try to infer an invariant for the loop
 
+The top-level statement is used to find free variables and their types
+for generating a Z3 expression.
+The Z3 program is invoked to test if two conditions are "equal"
+-}
 tryFindingInvar :: (PostConds, ProgParams, Statement) -> Expression -> Statement -> Expression -> Maybe Expression
-tryFindingInvar pconds guard body postCond =
+tryFindingInvar pconds@(_,_,topLevelStmt) guard body postCond =
   let
-    f w = BinOp (BinOp guard LAnd (fst $ wlp pconds body w)) LOr (BinOp (LNot guard) LAnd postCond)
-    iter w n = if ((simplifyPred w) == (simplifyPred (f w)) )
+    f w =  ( guard `land` (fst $ wlp pconds body w)) `lor` ((LNot guard) `land` postCond)
+    iter w n = if (z3iff topLevelStmt (simplifyPred w) (simplifyPred (f w)))
                then (Just w)
                else if (n >= fixpointDepth)
                then Nothing
                else iter (f w) (n+1)
   in iter (BoolLit True) 0
 
-invarIter :: (PostConds, ProgParams, Statement) -> Expression -> Statement -> Expression -> Int -> Expression
-invarIter pconds@(_,_,topLevelStmt) guard body postCond nmax =
-  let
-    f w = BinOp (BinOp guard LAnd (fst $ wlp pconds body w)) LOr (BinOp (LNot guard) LAnd postCond)
-    iter w n = if (z3iff topLevelStmt (simplifyPred w) (simplifyPred (f w)))
-               then w
-               else if (n >= nmax)
-               then simplifyPred (f w)
-               else iter (f w) (n+1)
-  in iter (BoolLit True) 0
 
 
---We sort our expressions so they come up to equality if they're commutatively equal
+{-
+Apply some heuristics, putting predicates in a regular form
+and simplify easy cases, so that our fix-point is likely to converge sooner,
+and so that it won't get too large in size
+-}
 simplifyOneLevelPred :: Expression -> Expression
 simplifyOneLevelPred (LNot (BoolLit True)) = BoolLit False
 simplifyOneLevelPred (LNot (BoolLit False)) = BoolLit True
 simplifyOneLevelPred (LNot (LNot e)) = e
 simplifyOneLevelPred (LNot (BinOp e1 LOr e2)) = BinOp (LNot e1) LAnd (LNot e2)
 simplifyOneLevelPred (LNot (BinOp e1 LOr e2)) = BinOp (LNot e1) LAnd (LNot e2)
-simplifyOneLevelPred (BinOp (BoolLit True) LAnd e) = e 
+simplifyOneLevelPred (BinOp (BoolLit True) LAnd e) = e
 simplifyOneLevelPred (BinOp e LAnd(BoolLit True)) =  e
 simplifyOneLevelPred (BinOp (BoolLit False) LOr e) =  e
 simplifyOneLevelPred (BinOp e LOr (BoolLit False)) =  e
@@ -159,17 +202,26 @@ simplifyOneLevelPred (BinOp e Times (IntLit 1)) = e
 simplifyOneLevelPred (BinOp (IntLit 0) Times _e) = IntLit 0
 simplifyOneLevelPred (BinOp _e Times (IntLit 0)) = IntLit 0
 simplifyOneLevelPred (BinOp e1 op e2) = let
-    [ee1, ee2] = sort [e1, e2] 
+    [ee1, ee2] = sort [e1, e2]
   in if isCommutative op
   then BinOp ee1 op ee2
   else BinOp e1 op e2
 simplifyOneLevelPred e = e
 
+{-
+Use SYB to apply our simplification rules bottom-up
+on a whole expression
+-}
 simplifyPred :: Expression -> Expression
 simplifyPred = everywhere $ mkT simplifyOneLevelPred
 
+--Rules for which binary-operations can switch their arguments
 isCommutative op = op `elem` [Plus, Times, And, Or, LAnd, LOr, Eq]
 
+{-
+Find the WLP for a particular function (program),
+given post-conditions for all programs, and parameter types for all programs
+-}
 programWLP :: (PostConds, ProgParams) -> Program -> (Expression, [Expression])
 programWLP (postConds, paramDict) (Program name params body) =
   let
@@ -190,11 +242,16 @@ z3wlpSingle (s, q) =
   in  (formatPred theWLP, map formatPred conds)
 
 
---Generate the Z3 code checking if the given statement matches the given post-condition
+{-
+Generate the Z3 code checking if the given statement matches the given post-condition
+We do this by negating the proposition, then checkign if it is satisfiable.
+First we search for all free-variables in the program, so that we can
+declare them in our Z3 string.
+-}
 z3wlpMulti :: ([Program], (PostConds, ProgParams)) -> [(String, [String])]
 z3wlpMulti (progs, postConds) =
   let
-    
+
     varDecs vars = foldr (\v decs -> decs ++ "\n" ++ varDec v) "" vars
     wlpsAndConds  = map (programWLP postConds) progs
     progWlpConds = zip progs wlpsAndConds
