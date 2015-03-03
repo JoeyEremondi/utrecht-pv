@@ -116,7 +116,7 @@ freeVars (FnCallAssign _ _ _) = []
 Same as freeVars, but traverses the body of a function
 -}
 progFreeVars :: Program -> Variables
-progFreeVars (Program _ params body) = [Variable [] (ToName "return") (Type IntT)]
+progFreeVars (Program _ params body ty) = [Variable [] (ToName "return") ty]
                                        ++ params ++ (freeVars body)
 {-
 Convert our types into the format Z3 can read

@@ -34,7 +34,7 @@ data TestResult = TestSuccess | TestFail String
 Helper util to get the name and parameters from a Program
 -}
 getParams :: Program -> (ProgramName, Parameters)
-getParams = (\(Program name params _) -> (name, params))
+getParams = (\(Program name params _ _) -> (name, params))
 
 {-
 Check if an array is sorted or not.
@@ -232,7 +232,7 @@ gcdTest =
              (ToProgName "modulo")
              [Variable [] (ToName "x") (Type IntT),
              Variable [] (ToName "m") (Type IntT)]
-             (Return $ var "x" `minus` ((var "x" `divv` var "m") `times` var "m") )
+             (Return $ var "x" `minus` ((var "x" `divv` var "m") `times` var "m") ) (Type IntT)
     gcdProg = Program
           (ToProgName "gcd")
           [Variable [] (ToName "a") (Type IntT),
@@ -244,7 +244,7 @@ gcdTest =
             ( (callFn "modab" "modulo" [var "a", var "b"])`Seq`
               (callFn "sub" "gcd" [var "a", var "modab"]) `Seq`
             (Return $ var "sub"))
-          ) )
+          ) ) (Type IntT)
     postconds = Map.fromList [
       (ToProgName "modulo",
        (( (var "x" `divv` var "m") `times` var "m") `plus` var "return") `eq` var "x")
@@ -259,7 +259,48 @@ gcdTest =
           (var "c" `leq` var "return")
         )))
         )
-      ] --TODO fix
+      ]
+
+{-
+Our GCD test, but where we mess up the definition and postcondition for modulo
+-}
+badGCDTest :: TestCase
+badGCDTest =
+  MultiProgram ("gcdBad.z3", Fail, [modulo, gcdProg], (postconds, params))
+  where
+    params = Map.fromList $ map getParams [modulo, gcdProg]
+    modulo = Program
+             (ToProgName "modulo")
+             [Variable [] (ToName "x") (Type IntT),
+             Variable [] (ToName "m") (Type IntT)]
+             (Return $ IntLit 22 ) (Type IntT)
+    gcdProg = Program
+          (ToProgName "gcd")
+          [Variable [] (ToName "a") (Type IntT),
+          Variable [] (ToName "b") (Type IntT)]
+          (Var [Variable [] (ToName "modab") (Type IntT),
+               Variable [] (ToName "sub") (Type IntT)] $
+          (ifelse (var "b" `eq` IntLit 0)
+            (Return $ var "a")
+            ( (callFn "modab" "modulo" [var "a", var "b"])`Seq`
+              (callFn "sub" "gcd" [var "a", var "modab"]) `Seq`
+            (Return $ var "sub"))
+          ) ) (Type IntT)
+    postconds = Map.fromList [
+      (ToProgName "modulo",
+       (var "return" `eq` IntLit 22))
+      ,
+      (ToProgName "gcd",
+       ( (var "b" `eq` IntLit 0) `implies` (var "return" `eq` var "a")) `land`
+       (((var "a" `gt` var "b") `land` (var "a" `gt` IntLit 0) `land` (var "b" `gt` IntLit 0))
+       `implies`(Forall (ToName "c", Type IntT)
+        ( (((UninterpCall "mod" [var "a", var "c"]) `eq` IntLit 0) `land`
+          ((UninterpCall "mod" [var "b", var "c"]) `eq` IntLit 0) `land`
+          (var "c" `gt` IntLit 0)) `implies`
+          (var "c" `leq` var "return")
+        )))
+        )
+      ]
 
 {-
 Make a function that returns 3, and check that it returns 3.
@@ -267,16 +308,16 @@ Extremely basic sanity check for multi-function programs.
 -}
 basicFnCallTest :: TestCase
 basicFnCallTest =
-  MultiProgram ("fnCallTest.z3", Succeed, [const3, mainF], (postconds, params))
+  MultiProgram ("fnCallTest.z3", Succeed, [const3, mainF], (postconds, params)) 
   where
     const3 = Program (ToProgName "three") [Variable [] (ToName "x") (Type IntT)]
-             (Return $ IntLit 3)
+             (Return $ IntLit 3) (Type IntT)
     mainF = Program (ToProgName "main") [] (
       Var [Variable [] (ToName "y") (Type IntT)] (
          (callFn "y" "three" [IntLit 0]) `Seq`
-         (Return $ var "y")
-         )
-      )
+         (Return $ var "y") 
+         ) 
+      ) (Type IntT)
     postconds = Map.fromList $ [
       (ToProgName "three", var "return" `eq` IntLit 3),
       (ToProgName "main", var "return" `eq` IntLit 3)
@@ -356,6 +397,7 @@ testList = [
            , slidesNoInvarTest
            , unrollingWorksTest
            , unrollingFailsTest
+           , badGCDTest
            ]
 
 

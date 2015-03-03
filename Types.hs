@@ -1,20 +1,16 @@
-{-# LANGUAGE DeriveFunctor, DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 module Types where
 
 import Data.Data
-import Data.Generics
-import qualified Data.Set as Set
-import Data.Typeable
-import Data.List (intercalate, sort)
-import Debug.Trace (trace)
 
-import Control.Monad (forM)
 import qualified Data.Map as Map
-import Debug.Trace (trace)
 
 
+--Type definitions
+--Are straightforward from the assignment description, with a few deviants
 
-data Program = Program ProgramName Parameters Statement
+--Just like in the assignment, but we also add a return type
+data Program = Program ProgramName Parameters Statement Type
 
 
 data Statement =
@@ -22,7 +18,7 @@ data Statement =
   | Assert Expression
   | Assume Expression
   | Assign AssignTargets Expression
-  | FnCallAssign AssignTarget ProgramName [Expression]
+  | FnCallAssign AssignTarget ProgramName [Expression] --We needed to add this case for program calls
   | Return Expression
   | Seq Statement Statement
   | NonDet Statement Statement
@@ -39,7 +35,7 @@ data Variable = Variable [Credential] Name Type
 type BoundVariable =(Name, Type)
                    
 
-data Credential = Credential --TODO optional?
+data Credential = Credential --I didn't implement this question, so it's just a unit type
                   deriving (Eq, Ord, Data, Typeable, Show)
 
 data AssignTarget =
@@ -58,7 +54,7 @@ data Expression =
     | Forall BoundVariable Expression
     | ArrAccess ArrName Expression
     | IfThenElse Expression Expression Expression
-    | RepBy Expression Expression Expression --internal use only 
+    | RepBy Expression Expression Expression --This should only be used internally, for array expressions 
       deriving (Eq, Ord, Data, Typeable)
 
 newtype Name = ToName {fromName :: String}
@@ -72,14 +68,6 @@ instance Show Name where
                         
 type ArrName = Name --TODO is this okay?
          
---newtype ArrName = ToArrName String
-               -- | RepBy ArrName Expression Expression
---                  deriving (Eq, Ord, Data, Typeable)
-
---instance Show ArrName where
---  show (ToArrName s) = s
-  --show (RepBy arr ind exp) = parens $ "store" +-+ (parens $ show arr) +-+ (toZ3 ind) +-+ (toZ3 exp) 
-                          
 newtype ProgramName = ToProgName {fromProgName :: String}
                       deriving (Eq, Ord, Data, Typeable)
 
@@ -92,12 +80,12 @@ data Type = Type PrimitiveType | ArrayType PrimitiveType
 data PrimitiveType = IntT | BoolT
                             deriving (Eq, Ord, Data, Typeable)
 
---data ArrayType = ArrayType PrimitiveType
---                 deriving (Eq, Ord, Data, Typeable)
 
 type Variables = [Variable]
 type Expressions = [Expression]
 type AssignTargets = [AssignTarget]
 
+--PostConditions are a dictionary mapping program names to an expression postcondition
 type PostConds = Map.Map ProgramName Expression
+--A dictionary mapping program names to their input parameters
 type ProgParams = Map.Map ProgramName Parameters 

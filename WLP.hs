@@ -223,7 +223,7 @@ Find the WLP for a particular function (program),
 given post-conditions for all programs, and parameter types for all programs
 -}
 programWLP :: (PostConds, ProgParams) -> Program -> (Expression, [Expression])
-programWLP (postConds, paramDict) (Program name params body) =
+programWLP (postConds, paramDict) (Program name params body _returnType) =
   let
     --Get our postcondition from the dictionary
     q = postConds Map.! name
