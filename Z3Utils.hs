@@ -1,9 +1,15 @@
 {-# LANGUAGE StandaloneDeriving #-}
 module Z3Utils where
 
-import WLP
+import Types
+--import WLP
 import Data.List (intercalate)
 import qualified Data.Map as Map
+
+import System.Process (readProcessWithExitCode)
+import System.Exit
+
+import System.IO.Unsafe (unsafePerformIO)
 
 deriving instance Show ProgramName
 deriving instance Show Statement
@@ -13,7 +19,10 @@ deriving instance Show Expression
 deriving instance Show Program
 
 while :: Expression -> Expression -> Statement -> Statement
-while inv g s = Loop inv g s
+while inv g s = Loop (Just inv) g s
+
+while_ :: Expression -> Statement -> Statement
+while_ g s = Loop Nothing g s
 
 var str = EName (ToName str)
 
@@ -123,28 +132,28 @@ showBinOp Eq = "="
 instance Show BinaryOp where
   show = showBinOp
 
+varDec (Variable _ v t) = parens $ "declare-const" +-+ show v +-+ show t
 
 
---Generate the Z3 code checking if the given statement matches the given post-condition
-z3wlpSingle :: (Statement, Expression) -> (String, [String])
-z3wlpSingle (s, q) =
+makeZ3String :: Statement -> Expression -> String
+makeZ3String s p =
   let
-    varDec (Variable _ v t) = parens $ "declare-const" +-+ show v +-+ show t
     varDecs vars = foldr (\v decs -> decs ++ "\n" ++ varDec v) "" vars
-    (theWLP, conds)  = wlp (Map.empty, Map.empty) s q
-    formatPred p = (varDecs (freeVars s) ++ "\n") ++ (formatZ3 $ p )
-  in  (formatPred theWLP, map formatPred conds)
+   in (varDecs (freeVars s) ++ "\n") ++ (formatZ3 $ p )
 
 
---Generate the Z3 code checking if the given statement matches the given post-condition
-z3wlpMulti :: ([Program], (PostConds, ProgParams)) -> [(String, [String])]
-z3wlpMulti (progs, postConds) =
-  let
-    varDec (Variable _ v t) = parens $ "declare-const" +-+ show v +-+ show t
-    varDecs vars = foldr (\v decs -> decs ++ "\n" ++ varDec v) "" vars
-    wlpsAndConds  = map (programWLP postConds) progs
-    progWlpConds = zip progs wlpsAndConds
-    formatPred prog pred = (varDecs (progFreeVars prog) ++ "\n") ++ (formatZ3 $ pred )
-    formattedPreds = map (\(prog, (theWLP, conds)) ->
-                           (formatPred prog theWLP,  (map (formatPred prog) conds) ) ) progWlpConds
-  in formattedPreds
+z3IsValid :: String -> IO Bool
+z3IsValid checkFile = do
+  (code, stdout, stderr) <- readProcessWithExitCode "z3" ["-in"] checkFile
+  case (code, stdout, stderr) of
+        (ExitSuccess, "unsat\n", "") -> return True
+        (ExitSuccess, "sat\n", "") -> return False
+        r -> error $ "Z3 error: " ++ (show r) ++ "\n" ++ checkFile
+  
+getModel :: String -> IO String
+getModel checkFile = do
+  (_code, stdout, _stderr) <- readProcessWithExitCode "z3" ["-in"] (checkFile ++ "\n(get-model)")
+  return stdout
+
+z3iff :: Statement -> Expression -> Expression -> Bool
+z3iff s e1 e2 = unsafePerformIO $ z3IsValid $ makeZ3String s (e1 `iff` e2)

@@ -3,9 +3,10 @@ import Prelude hiding (seq)
 
 import WLP
 import Z3Utils
+import Types
 import Control.Monad (forM)
-import System.Process (readProcessWithExitCode)
-import System.Exit
+--import System.Process (readProcessWithExitCode)
+--import System.Exit
 import Data.Maybe (isJust)
 import qualified Data.Map as Map
 
@@ -221,6 +222,28 @@ basicFnCallTest =
     params = Map.fromList $ map getParams [const3, mainF]
 
 
+loopMultNoInvarTest :: TestCase
+loopMultNoInvarTest = SingleProgram ("loopMult.z3", Succeed, (s,q))
+  where
+    s = Var [
+      Variable [] (ToName "x") (Type IntT),
+      Variable [] (ToName "y") (Type IntT),
+      Variable [] (ToName "i") (Type IntT)] $
+      ("x" `assign` IntLit 0) `Seq`
+      ("i" `assign` IntLit 0) `Seq`
+      (while_
+        --Guard
+        (var "i" `lt` IntLit 10)
+        --Body
+        ( ("x" `assign` ((var "x") `plus` (var "y")))  `Seq`
+          ("i" `assign` (var "i" `plus` IntLit 1))) )
+    q = (var "i" `eq` IntLit 10) `land`
+      (var "x" `eq` (IntLit 10 `times` var "y")) 
+
+
+
+
+
 testList :: [TestCase]
 testList = [
            simpleAssignTest
@@ -232,13 +255,11 @@ testList = [
            , loopMultBadTest
            , basicFnCallTest
            , gcdTest
+            , loopMultNoInvarTest
            ]
 
 
-getModel :: String -> IO String
-getModel checkFile = do
-  (_code, stdout, _stderr) <- readProcessWithExitCode "z3" ["-in"] (checkFile ++ "\n(get-model)")
-  return stdout
+
 
 combineResults :: TestResult -> TestResult -> TestResult
 combineResults TestSuccess x = x
@@ -258,24 +279,31 @@ z3Unsat (testFile, checkFiles) = do
   --Check each invariant condition generated along the way
   invarPasses <-
     forM checkFiles $ \checkFile -> do
-      (code, stdout, stderr) <- readProcessWithExitCode "z3" ["-in"] checkFile
+      isValid <- z3IsValid checkFile
       model <- getModel checkFile
-      case (code, stdout, stderr) of
-        (ExitSuccess, "unsat\n", "") -> return Nothing
-        (ExitSuccess, "sat\n", "") ->
+      case isValid of
+        True -> return Nothing
+        False ->
           return $ Just $ "Invariant Failed:\n" ++ checkFile ++ "\nModel:\n" ++ model
         r -> error $ "Z3 error: " ++ (show r) ++ "\n" ++ checkFile
   case (filter isJust invarPasses) of --TODO get justs
     ((Just str):_) -> return $ TestFail str
     [] -> do
-      (code, stdout, stderr) <- readProcessWithExitCode "z3" ["-in"]  testFile
+      isValid <- z3IsValid testFile
       model <- getModel testFile
-      case ( code, stdout, stderr) of
-        (ExitSuccess, "unsat\n", "") -> return TestSuccess
-        (ExitSuccess, "sat\n", "") ->
+      case isValid of
+        True -> return TestSuccess
+        False ->
           return $ TestFail $ "Invalid Precondition:\n" ++ testFile ++ "\nModel:\n" ++ model
         r -> error $ "Z3 error: " ++ (show r) ++ "\n" ++ testFile
       
+
+
+
+
+
+
+
 
 main :: IO ()
 main = do
@@ -303,3 +331,4 @@ main = do
   putStrLn $ "Tests failed: " ++ show numFails
   return ()
   
+
