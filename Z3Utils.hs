@@ -1,4 +1,13 @@
 {-# LANGUAGE StandaloneDeriving #-}
+{-
+Joseph Eremondi
+Program Verification
+UU# 4229924
+March 4, 2015
+-}
+
+--Helper functions for converting GCL to Z3 code
+--And for calling Z3 from the command line
 module Z3Utils where
 
 import Types

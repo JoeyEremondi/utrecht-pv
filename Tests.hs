@@ -1,4 +1,12 @@
---module Tests where
+{-
+Joseph Eremondi
+Program Verification
+UU# 4229924
+March 4, 2015
+-}
+
+--Tests for our WLP transformer
+
 import           Prelude       hiding (seq)
 
 import           Control.Monad (forM)

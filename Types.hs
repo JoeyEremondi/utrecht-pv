@@ -1,3 +1,12 @@
+{-
+Joseph Eremondi
+Program Verification
+UU# 4229924
+March 4, 2015
+-}
+
+--Common types used by all other modules
+
 {-# LANGUAGE DeriveDataTypeable #-}
 module Types where
 
