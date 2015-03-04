@@ -288,7 +288,7 @@ badGCDTest =
           ) ) (Type IntT)
     postconds = Map.fromList [
       (ToProgName "modulo",
-       (var "return" `eq` IntLit 22))
+       (var "return" `geq` IntLit 0))
       ,
       (ToProgName "gcd",
        ( (var "b" `eq` IntLit 0) `implies` (var "return" `eq` var "a")) `land`
@@ -402,6 +402,30 @@ forallRenameTest = SingleProgram ("forallRename.z3", Fail, (s,q))
           ( "y" `assign` ( (var "x") `plus` IntLit 10 ))
     q = Forall (ToName "x", Type IntT) ( var "y" `gt` var "x" )
 
+{-
+Take an array, and double its contents.
+The post-condition is that each variable in the resulting array is divisible by two.
+-}
+arrayAssignTest :: TestCase
+arrayAssignTest = SingleProgram ("arrayAssign.z3", Succeed, (s,q))
+  where
+    s = Var [
+      Variable [] (ToName "arr") (ArrayType IntT),
+      Variable [] (ToName "n") (Type IntT),
+      Variable [] (ToName "i") (Type IntT)
+      ] $
+        ("i" `assign` IntLit 0) `Seq`
+        (while_
+           --We can infer this invariant
+           (var "i" `lt` var "n")
+           (Assign
+              [ArrTarget (ToName "arr") (var "i")]
+                ((IntLit 2) `times` (ArrAccess (ToName "arr") (var "i")))
+           ))
+    q = (Forall (ToName "i", Type IntT) $
+          ( ((IntLit 0 `leq` var "i") `land` (var "i" `lt` var "n"))
+            `implies` ((callUnqual "mod" [ArrAccess (ToName "arr") (var "i"), IntLit 2])
+            `eq` IntLit 0) ))
 
 --All tests to be run
 testList :: [TestCase]
@@ -420,6 +444,7 @@ testList = [
            , unrollingFailsTest
            , badGCDTest
            , forallRenameTest
+           , arrayAssignTest
            ]
 
 

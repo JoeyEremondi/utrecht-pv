@@ -30,6 +30,8 @@ var str = EName (ToName str)
 
 callFn varStr str es = FnCallAssign (VarTarget $ ToName varStr) (ToProgName str) es
 
+callUnqual fnName es = UninterpCall (fnName) es
+
 binop :: BinaryOp -> Expression -> Expression -> Expression
 binop op e1 e2 = BinOp e1 op e2
 
@@ -82,6 +84,7 @@ toZ3 (UninterpCall name params) = parens $ name +-+ ( intercalate " " (map toZ3 
 toZ3 (Forall (v,t) p) = parens $ "forall" +-+ (parens $ parens $ show v +-+ show t) +-+ toZ3 p 
 toZ3 (ArrAccess arr i) = parens $ "select" +-+ (show arr) +-+ (toZ3 i) 
 toZ3 (IfThenElse p1 p2 p3) = parens $  "ite" +-+ (toZ3 p1) +-+ (toZ3 p2) +-+ (toZ3 p3)
+toZ3 (RepBy e1 e2 e3) = parens $ "store" +-+ (toZ3 e1) +-+ (toZ3 e2) +-+ (toZ3 e3)
 
 {-
 To verify an expression is valid, we negate it,
