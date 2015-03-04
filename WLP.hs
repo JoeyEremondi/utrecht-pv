@@ -7,6 +7,8 @@ import           Data.Generics
 import           Data.List     (sort)
 import qualified Data.Map      as Map
 
+--trace _ x = x
+
 --Constants limiting how far we go trying to infer loop invariants
 
 fixpointDepth :: Int
@@ -55,8 +57,8 @@ wlp pconds (Assign targets exp) q =
   let
     sub1 = subExpForName (getVarTargets targets) exp q
     sub2 = subExpForArrName (getArrTargets targets) exp sub1
-  in (sub2, []) --TODO make simultaneous?
-wlp pconds (Return expr) q = wlp pconds (Assign [VarTarget $ ToName "return"] expr) q --TODO special name?
+  in (sub2, []) 
+wlp pconds (Return expr) q = wlp pconds (Assign [VarTarget $ ToName "return"] expr) q 
 wlp (postConds, progParams, _) (FnCallAssign target progName params) q =
   let
     targetExp = case target of
@@ -99,7 +101,23 @@ wlp pconds (Loop Nothing guard body) q =
                 (invar `land` (LNot guard)) `implies` q
                , (invar `land` guard) `implies` subWLP ] ++ subConds)
 
-wlp pconds (Var vars s) q = wlp pconds s q --TODO credentials
+wlp pconds (Var vars s) q = wlp pconds s q
+
+{-
+Test if a given name occurs as a free variable in an expression
+Used to resolve naming issues with foralls
+-}
+occursIn :: Name -> Expression -> Bool
+occursIn n (IntLit e) = False
+occursIn n (BoolLit e) = False
+occursIn n (EName e) = e == n
+occursIn n (BinOp e1 e2 e3) = (occursIn n e1) || (occursIn n e3)
+occursIn n (LNot e) = occursIn n e
+occursIn n (UninterpCall e1 e2) = (not . null) $ filter (== True) $ map (occursIn n) e2
+occursIn n (Forall (n1, _) e2) = (n /= n1) && (occursIn n e2) --Exclude the bound variable
+occursIn n (ArrAccess e1 e2) = (e1 == n) || (occursIn n e2)
+occursIn n (IfThenElse e1 e2 e3) = (occursIn n e1) || (occursIn n e2) || (occursIn n e3)
+occursIn n (RepBy e1 e2 e3) = (occursIn n e1) || (occursIn n e2) || (occursIn n e3)
 
 {-
 Given a set of names to replace, an expression to replace them with,
@@ -111,17 +129,42 @@ subOneLevel names subExp e@(EName varName)   =
   if (varName `elem` names)
   then subExp
   else e
+--subOneLevel names subExp e@(Forall _ _) = fixForall subExp e 
 subOneLevel _ _ e = e
 
---TODO what about forall conflicts?
+{-
+Rename variables in a Forall expression that conflict with the given expression
+which is about to be substituted.
+Fixes the problems with assignment subsitution conflicting with foralls.
+-}
+fixForall :: Expression -> Expression -> Expression
+fixForall subExp e = 
+ case e of
+  Forall (vn, vt) body ->
+    if vn `occursIn` subExp
+       --Recursively call to make sure our new name isn't also in the list
+    then
+      let
+         genNewName n = 
+           if n `occursIn` subExp
+              then genNewName (ToName $ "freshVar" ++ fromName n)
+              else n
+         newName = genNewName vn
+         newBody = subExpForName [vn] (EName newName) body
+         ret = Forall (newName, vt) newBody
+       in ret 
+    else e 
+  _ -> e
 
 {-
 Use Scrap-Your-Boilerplate to recursively apply our substutitions
 to our expression, bottom-up
 -}
-subExpForName :: (Data a) => [Name] -> Expression -> a -> a
-subExpForName names subExp = everywhere (mkT $ subOneLevel names subExp)
-
+subExpForName ::  [Name] -> Expression -> Expression -> Expression
+subExpForName names subExp  = let
+    subAll = everywhere (mkT $ subOneLevel names subExp)
+    fixAllForalls = everywhere (mkT $ fixForall subExp )
+  in (subAll . fixAllForalls)
 {-
 Given a list of array names and index expressions, an expression to subtitute,
 and an expression e, check if e is an array name in our list,
@@ -130,10 +173,9 @@ to denote a substitution
 -}
 subOneLevelArr :: [(Name, Expression)] -> Expression -> Expression -> Expression
 subOneLevelArr nameIndexPairs subExpr e@(EName varName) =
-  let
+   let
     nameIndList = filter (\(n,_) -> n == varName) nameIndexPairs
   in foldr (\(_,i) expSoFar -> RepBy expSoFar i subExpr) e nameIndList
-    --TODO multi case?
 subOneLevelArr l subExp e = e
 
 {-
@@ -141,7 +183,10 @@ Use Scrap-Your-Boilerplate to recursively apply our substutitions
 to our expression, bottom-up
 -}
 subExpForArrName :: (Data a) => [(Name, Expression)] -> Expression -> a -> a
-subExpForArrName names subExp = everywhere (mkT $ subOneLevelArr names subExp)
+subExpForArrName names subExp = let
+    subAll = everywhere  (mkT $ subOneLevelArr names subExp)
+    fixAllForalls = everywhere (mkT $ fixForall subExp )
+  in (subAll . fixAllForalls)
 
 {-
 Given a loop guard and body, unroll the loop

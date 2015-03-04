@@ -66,7 +66,7 @@ instance Show Name where
 
 
                         
-type ArrName = Name --TODO is this okay?
+type ArrName = Name
          
 newtype ProgramName = ToProgName {fromProgName :: String}
                       deriving (Eq, Ord, Data, Typeable)

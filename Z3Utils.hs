@@ -81,7 +81,7 @@ toZ3 (LNot p) = parens $ "not" +-+ toZ3 p
 toZ3 (UninterpCall name params) = parens $ name +-+ ( intercalate " " (map toZ3 params))
 toZ3 (Forall (v,t) p) = parens $ "forall" +-+ (parens $ parens $ show v +-+ show t) +-+ toZ3 p 
 toZ3 (ArrAccess arr i) = parens $ "select" +-+ (show arr) +-+ (toZ3 i) 
-toZ3 (IfThenElse p1 p2 p3) = parens "ite" +-+ (toZ3 p1) +-+ (toZ3 p2) +-+ (toZ3 p3)
+toZ3 (IfThenElse p1 p2 p3) = parens $  "ite" +-+ (toZ3 p1) +-+ (toZ3 p2) +-+ (toZ3 p3)
 
 {-
 To verify an expression is valid, we negate it,
@@ -109,7 +109,7 @@ freeVars (Seq s1 s2) = freeVars s1 ++ freeVars s2
 freeVars (NonDet s1 s2) = freeVars s1 ++ freeVars s2
 freeVars (Loop _ _ s) = freeVars s
 freeVars (Var vars s) = vars ++ freeVars s
-freeVars (Return s) = [] --TODO other types?
+freeVars (Return s) = [] 
 freeVars (FnCallAssign _ _ _) = [] 
 
 {-

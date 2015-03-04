@@ -124,7 +124,7 @@ Z3 should find a counter-example showing that the program
 does not meet its postcondition.
 -}
 ifElseBadTest :: TestCase
-ifElseBadTest = SingleProgram ("ifElse.z3", Fail, (s,q))
+ifElseBadTest = SingleProgram ("ifElseBad.z3", Fail, (s,q))
   where
     s = Var [Variable [] (ToName "x") (Type IntT)] $
         ifelse (var "x" `lt` IntLit 0)
@@ -382,6 +382,27 @@ unrollingFailsTest = SingleProgram ("unrollFail.z3", Fail, (s,q))
       (var "x" `eq` (IntLit 300 `times` var "y")))
 
 
+{-
+A case where there's a naming conflict between
+a post-condition forall-bound variable, and
+a program variable.
+If the renaming fails, the postcondition is satisfied, since the forall will be weakened
+by substituting 3 or 4 in for x
+-}
+forallRenameTest :: TestCase
+forallRenameTest = SingleProgram ("forallRename.z3", Fail, (s,q))
+  where
+    s = Var [
+        Variable [] (ToName "x") (Type IntT),
+        Variable [] (ToName "g") (Type BoolT),
+        Variable [] (ToName "y") (Type IntT)
+      ] 
+        $ ("g" `assign` BoolLit False) `Seq`
+          ( "x" `assign` IfThenElse (var "g") (IntLit 3) (IntLit 4) ) `Seq`
+          ( "y" `assign` ( (var "x") `plus` IntLit 10 ))
+    q = Forall (ToName "x", Type IntT) ( var "y" `gt` var "x" )
+
+
 --All tests to be run
 testList :: [TestCase]
 testList = [
@@ -398,6 +419,7 @@ testList = [
            , unrollingWorksTest
            , unrollingFailsTest
            , badGCDTest
+           , forallRenameTest
            ]
 
 
@@ -454,8 +476,6 @@ z3Unsat (testFile, checkFiles) = do
 
 
 
-
-
 {-
 Our main loop:
 For each of our tests, call the appropriate function to invoke Z3,
@@ -463,18 +483,23 @@ and compare the result (succeed/fail) against the expected result.
 If we don't get the expected result, print an error message
 with information about what went wrong.
 -}
-main :: IO ()
-main = do
+runTests :: [TestCase] -> IO ()
+runTests tests = do
   --Get a list of bools for if each tests passes
-  successList <- forM testList $ \test -> do
+  successList <- forM tests  $ \test -> do
+      let (testName, shouldPass) = case test of
+              SingleProgram (n, s, _) -> (n,s)
+              MultiProgram (n, s, _, _) -> (n,s)
+      --putStrLn $ "Testing " ++ testName
       satResult <- case test of
         SingleProgram (testName, shouldPass, testCase) -> singleUnsat testCase
         MultiProgram (testName, shouldPass, programs, postconds) -> multiUnsat (programs, postconds)
-      let (testName, shouldPass) = case test of
-            SingleProgram (n, s, _) -> (n,s)
-            MultiProgram (n, s, _, _) -> (n,s)
+      
+      
       case (shouldPass, satResult) of
-            (Succeed, TestSuccess) -> return True
+            (Succeed, TestSuccess) -> do
+              --putStrLn "Passed!"
+              return True
             (Fail, TestFail _) -> return True
             (_, TestFail s) -> do
               putStrLn $ "FAILED: " ++ testName ++ " found counter-example\n    " ++ s
@@ -482,6 +507,7 @@ main = do
             (_, TestSuccess) -> do
               putStrLn $ "FAILED: " ++ testName ++ " could not disprove bad postcondition"
               return False
+      
 
   let numPasses = length $ filter id successList
   let numFails = length $ filter not successList
@@ -490,3 +516,4 @@ main = do
   return ()
 
 
+main = runTests testList
